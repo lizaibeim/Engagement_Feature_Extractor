@@ -1,7 +1,28 @@
 import librosa
+import os
 import matplotlib.pyplot as plt
 import numpy as np
-import os
+from tensorflow.keras import backend as K
+
+
+def weighted_categorical_crossentropy(weights):
+    """
+    :param weights: weights array
+    :return: loss function
+    """
+
+    weights = K.variable(weights)
+
+    def loss(y_true, y_pred):
+        y_pred /= K.sum(y_pred, axis=-1, keepdims=True)
+        y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
+
+        weight_loss = y_true * K.log(y_pred) * weights
+        weight_loss = -K.sum(weight_loss, -1)
+
+        return weight_loss
+
+    return loss
 
 
 class OverlapFeaturesGenerator:
@@ -16,6 +37,8 @@ class OverlapFeaturesGenerator:
         self.sr = sr
         self.window_length = int(sr * (wl / 1000))
         self.hop_length = int(sr * (hl / 1000))
+        self.time_dim = 151
+        self.mel_dim = 128
 
     def get_attributes(self):
         """
@@ -23,6 +46,10 @@ class OverlapFeaturesGenerator:
         """
 
         return self.window_length, self.hop_length, self.sr
+
+    def confining_features(self, features_arr):
+        new_features_arr = features_arr[:self.mel_dim, :self.time_dim]
+        return new_features_arr
 
     def generate_mels(self, wav_file_path, n_mels=128):
         """
@@ -32,11 +59,12 @@ class OverlapFeaturesGenerator:
         """
 
         y, sr = librosa.load(wav_file_path, sr=None)
-        S = librosa.feature.melspectrogram(y, sr, hop_length=self.hop_length, n_fft=self.window_length, n_mels=n_mels)
-        S_db = librosa.power_to_db(S, ref=np.max)
-        S_db_norm = self.normalize_matrix(S_db)
+        s = librosa.feature.melspectrogram(y, sr, hop_length=self.hop_length, n_fft=self.window_length, n_mels=n_mels)
+        s_db = librosa.power_to_db(s, ref=np.max)
+        s_db_norm = self.normalize_matrix(s_db)
+        s_db_norm = self.confining_features(s_db_norm)
 
-        return S_db, S_db_norm
+        return s_db, s_db_norm
 
     def generate_zcr(self, wav_file_path):
         """
@@ -45,9 +73,8 @@ class OverlapFeaturesGenerator:
         """
 
         y, sr = librosa.load(wav_file_path, sr=None)
-        arr_zcr = librosa.feature.zero_crossing_rate(y, frame_length=self.window_length, hop_length=self.hop_length)
-
-        return arr_zcr
+        _arr_zcr = librosa.feature.zero_crossing_rate(y, frame_length=self.window_length, hop_length=self.hop_length)
+        return _arr_zcr
 
     @staticmethod
     def normalize_matrix(m):
@@ -65,9 +92,31 @@ class OverlapFeaturesGenerator:
                 temp[i][j] = (m[i][j] - min_val) / diff
         return temp
 
+    def generate_gary_image(self, wav_file_path, image_path):
+        _, _norm_log_power_mel_spectrum = self.generate_mels(wav_file_path)
+        plt.imsave(image_path, _norm_log_power_mel_spectrum, origin="lower", cmap="gray")
+
+    def generate_viridis_image(self, wav_file_path, image_path):
+        _, _norm_log_power_mel_spectrum = self.generate_mels(wav_file_path)
+        plt.imsave(image_path, _norm_log_power_mel_spectrum, origin="lower", cmap="viridis")
+
+    def generate_zcr_image(self, wav_file_path, image_path):
+        _, _norm_log_power_mel_spectrum = self.generate_mels(wav_file_path)
+        _arr_zcr = self.generate_zcr(wav_file_path)
+        _zcr_enhanced_image = np.empty(
+            (_norm_log_power_mel_spectrum.shape[0], _norm_log_power_mel_spectrum.shape[1], 3))
+
+        for i in range(_norm_log_power_mel_spectrum.shape[0]):
+            for j in range(_norm_log_power_mel_spectrum.shape[1]):
+                _zcr_enhanced_image[i][j][0] = _arr_zcr[0][j]
+                _zcr_enhanced_image[i][j][1] = 1 - _norm_log_power_mel_spectrum[i][j]
+                _zcr_enhanced_image[i][j][2] = 1 - _norm_log_power_mel_spectrum[i][j]
+
+        plt.imsave(image_path, _zcr_enhanced_image, origin="lower")
+
     def generate_images(self, wav_file_path, file_name):
         """
-        :param wav_file_path: audio file to create and save zcr-enhanced image, mel-grayscale image, viridis image, and zcr plot
+        :param wav_file_path: audio file to create and save zcr-enhanced image, mel-grayscale image, viridis image
         :param file_name: image name for storage
         :return: None
         """
@@ -82,52 +131,12 @@ class OverlapFeaturesGenerator:
         if not os.path.isdir("./mel_spectrum_zcr"):
             os.mkdir("./mel_spectrum_zcr")
 
-        arr_zcr = self.generate_zcr(wav_file_path)
-        # plt.imsave("./zcr_plot/" + file_name, arr_zcr[0])
+        _, _norm_log_power_mel_spectrum = self.generate_mels(wav_file_path)
+        _zcr_enhanced_image = self.generate_zcr_image(wav_file_path)
 
-        _, norm_log_power_mel_spectrum = self.generate_mels(wav_file_path)
-        plt.imsave('./mel_spectrum_viridis/' + file_name, norm_log_power_mel_spectrum, origin="lower", cmap="viridis")
-        plt.imsave('./mel_spectrum_gray/' + file_name, norm_log_power_mel_spectrum, origin="lower", cmap="gray")
-
-        zcr_enhanced_image = np.empty((norm_log_power_mel_spectrum.shape[0], norm_log_power_mel_spectrum.shape[1], 3))
-        for i in range(norm_log_power_mel_spectrum.shape[0]):
-            for j in range(norm_log_power_mel_spectrum.shape[1]):
-                zcr_enhanced_image[i][j][0] = arr_zcr[0][j]
-                zcr_enhanced_image[i][j][1] = 1 - norm_log_power_mel_spectrum[i][j]
-                zcr_enhanced_image[i][j][2] = 1 - norm_log_power_mel_spectrum[i][j]
-        plt.imsave('./mel_spectrum_zcr/' + file_name, zcr_enhanced_image, origin="lower")
-        plt.close('all')
-
-    def generate_test_images(self, wav_file_path, file_name):
-        """
-        :param wav_file_path: audio file to create and save zcr-enhanced image, mel-grayscale image, viridis image, and zcr plot
-        :param file_name: image name for storage
-        :return: None
-        """
-
-        if not os.path.isdir("./mel_spectrum_viridis_test"):
-            os.mkdir("./mel_spectrum_viridis_test")
-
-        if not os.path.isdir("./mel_spectrum_gray_test"):
-            os.mkdir("./mel_spectrum_gray_test")
-
-        if not os.path.isdir("./mel_spectrum_zcr_test"):
-            os.mkdir("./mel_spectrum_zcr_test")
-
-        arr_zcr = self.generate_zcr(wav_file_path)
-
-        _, norm_log_power_mel_spectrum = self.generate_mels(wav_file_path)
-        plt.imsave('./mel_spectrum_viridis_test/' + file_name, norm_log_power_mel_spectrum, origin="lower",
-                   cmap="viridis")
-        plt.imsave('./mel_spectrum_gray_test/' + file_name, norm_log_power_mel_spectrum, origin="lower", cmap="gray")
-
-        zcr_enhanced_image = np.empty((norm_log_power_mel_spectrum.shape[0], norm_log_power_mel_spectrum.shape[1], 3))
-        for i in range(norm_log_power_mel_spectrum.shape[0]):
-            for j in range(norm_log_power_mel_spectrum.shape[1]):
-                zcr_enhanced_image[i][j][0] = arr_zcr[0][j]
-                zcr_enhanced_image[i][j][1] = 1 - norm_log_power_mel_spectrum[i][j]
-                zcr_enhanced_image[i][j][2] = 1 - norm_log_power_mel_spectrum[i][j]
-        plt.imsave('./mel_spectrum_zcr_test/' + file_name, zcr_enhanced_image, origin="lower")
+        plt.imsave('./mel_spectrum_viridis/' + file_name, _norm_log_power_mel_spectrum, origin="lower", cmap="viridis")
+        plt.imsave('./mel_spectrum_gray/' + file_name, _norm_log_power_mel_spectrum, origin="lower", cmap="gray")
+        plt.imsave('./mel_spectrum_zcr/' + file_name, _zcr_enhanced_image, origin="lower")
         plt.close('all')
 
 
@@ -193,8 +202,7 @@ if __name__ == '__main__':
             zcr_enhanced_image[i][j][1] = 1 - norm_log_power_mel_spectrum[i][j]
             zcr_enhanced_image[i][j][2] = 1 - norm_log_power_mel_spectrum[i][j]
 
-
-    plt.plot(np.arange(len(arr_zcr[0]))*0.01, arr_zcr[0])
+    plt.plot(np.arange(len(arr_zcr[0])) * 0.01, arr_zcr[0])
     plt.xlabel('time')
     plt.ylabel('zero crossing rate')
     plt.savefig('zcr_plot.png', dpi=500, bbox_inches='tight')
@@ -202,12 +210,10 @@ if __name__ == '__main__':
 
     plt.imshow(zcr_enhanced_image, origin='lower')
     plt.xticks([0, 20, 40, 60, 80, 100, 120, 140], labels=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4])
-    plt.yticks([0, 15, 31, 47, 63, 79, 95, 111, 127], labels=[int(melfb[0]), int(melfb[15]), int(melfb[31]), int(melfb[47]), int(melfb[63]), int(melfb[79]), int(melfb[95]), int(melfb[111]), int(melfb[127])])
+    plt.yticks([0, 15, 31, 47, 63, 79, 95, 111, 127],
+               labels=[int(melfb[0]), int(melfb[15]), int(melfb[31]), int(melfb[47]), int(melfb[63]), int(melfb[79]),
+                       int(melfb[95]), int(melfb[111]), int(melfb[127])])
     plt.xlabel('time')
     plt.ylabel('128 mels frequency (Hz)')
     plt.savefig('zcr_enhanced.png', dpi=500, bbox_inches='tight')
     plt.show()
-
-
-
-
